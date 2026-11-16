@@ -61,6 +61,11 @@ def test_format_stores_pattern_and_datefmt():
     fmt = Format("%(message)s", "%H:%M")
     assert fmt.pattern == "%(message)s"
     assert fmt.datefmt == "%H:%M"
+    assert fmt.traceback is True  # default: show tracebacks
+
+
+def test_format_traceback_can_be_switched_off():
+    assert Format("%(message)s", None, traceback=False).traceback is False
 
 
 # ---------------------------------------------------------------------------
@@ -385,3 +390,49 @@ def test_logging_error_does_not_crash_the_program(logger_name, capsys):
     logger.info("broken %d", "not a number")
     logger.info("still running")
     assert "still running" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# Tracebacks: console = message only, log file = message + traceback
+# ---------------------------------------------------------------------------
+def _fail_inside_a_function():
+    raise FileNotFoundError("Config file not found: x.json")
+
+
+def test_console_shows_exception_message_without_traceback(logger_name, capsys):
+    logger = setup_logger(name=logger_name)
+    try:
+        _fail_inside_a_function()
+    except Exception as e:
+        logger.exception(f"❌ Error: {e}")
+    console = capsys.readouterr().err
+    assert "[ERROR] ❌ Error: Config file not found: x.json" in console
+    assert "Traceback" not in console
+
+
+def test_file_shows_exception_message_with_traceback(logger_name, tmp_path):
+    logger = setup_logger(name=logger_name, log_to_file=True, file_name="x.log")
+    try:
+        _fail_inside_a_function()
+    except Exception as e:
+        logger.exception(f"❌ Error: {e}")
+    content = (tmp_path / "x.log").read_text(encoding="utf-8")
+    assert "❌ Error: Config file not found: x.json" in content
+    assert "Traceback (most recent call last)" in content
+    assert "in _fail_inside_a_function" in content  # WHERE it actually broke
+
+
+def test_hiding_the_traceback_does_not_depend_on_output_order(logger_name, capsys):
+    # file first, console second: the console must still hide it, the file still show it
+    file_fmt = Format("%(message)s", None, traceback=True)
+    console_fmt = Format("%(message)s", None, traceback=False)
+    logger = AppLogger(
+        logger_name,
+        [FileTarget("debug", file_fmt, "x.log"), ConsoleTarget("info", console_fmt)],
+    ).build()
+    try:
+        _fail_inside_a_function()
+    except Exception:
+        logger.exception("boom")
+    assert "Traceback" not in capsys.readouterr().err
+    assert "Traceback" in open("x.log", encoding="utf-8").read()

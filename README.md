@@ -2,8 +2,8 @@
 
 One-line logging setup for Python projects, built on the standard `logging` module.
 
-- **Console**: clean, short lines (INFO and above)
-- **Log file** (optional): detailed lines with a clickable `path:line` (DEBUG and above)
+- **Console**: clean, short lines (INFO and above), no tracebacks
+- **Log file** (optional): detailed lines with a clickable `path:line` (DEBUG and above), with tracebacks
 
 ```
 Console:   2026-11-16 12:00:44 [INFO] ✅ Analysis completed.
@@ -15,13 +15,13 @@ Requires Python 3.10+. No dependencies.
 ## Installation
 
 ```bash
-pip install git+https://github.com/Hamza-Zubair/app_logger.git@v0.1.0
+pip install git+https://github.com/Hamza-Zubair/app_logger.git@v0.2.0
 ```
 
 Or in `requirements.txt`:
 
 ```
-app_logger @ git+https://github.com/Hamza-Zubair/app_logger.git@v0.1.0
+app_logger @ git+https://github.com/Hamza-Zubair/app_logger.git@v0.2.0
 ```
 
 ## Usage
@@ -38,12 +38,20 @@ def main():
     logger.info("Starting...")
     try:
         run_analysis()
-    except Exception:
-        logger.exception("❌ Error")
+    except Exception as e:
+        logger.exception(f"❌ Error: {e}")
 ```
 
-Errors raised anywhere in your code reach this `except` and are logged with the file and line
-where they happened.
+Errors raised anywhere in your code reach this `except`. The console shows only the message,
+the log file also shows the traceback (the file and line where the error happened):
+
+```
+Console:   2026-11-16 15:14:16 [ERROR] ❌ Error: Config file not found: x.json
+Log file:  2026-11-16 15:14:16.637 | ERROR    | /home/me/project/run.py:79 | ❌ Error: Config file not found: x.json
+           Traceback (most recent call last):
+             File "/home/me/project/my_package/io.py", line 14, in load_config
+           ...
+```
 
 ### Logging from other modules (optional)
 

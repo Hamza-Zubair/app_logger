@@ -32,15 +32,36 @@ def _script_name() -> str:
 # Log line layout
 class Format:
     """
-    A log line layout: the pattern and the date format.
+    A log line layout: the pattern, the date format, and whether tracebacks are shown.
 
     :param pattern: Logging pattern, e.g. "%(asctime)s [%(levelname)s] %(message)s"
     :param datefmt: Date format for %(asctime)s, e.g. "%Y-%m-%d %H:%M:%S" (None = default)
+    :param traceback: Show the traceback of logger.exception(...) calls (False = message only)
     """
 
-    def __init__(self, pattern: str, datefmt: str | None) -> None:
+    def __init__(
+        self, pattern: str, datefmt: str | None, traceback: bool = True
+    ) -> None:
         self.pattern = pattern
         self.datefmt = datefmt
+        self.traceback = traceback
+
+
+# Formatter that leaves out tracebacks
+class _NoTracebackFormatter(logging.Formatter):
+    """
+    A logging.Formatter that writes only the log line, never the traceback.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        # hide the traceback for this one line, then put it back,
+        # so other outputs (e.g. the log file) still get it
+        saved = (record.exc_info, record.exc_text, record.stack_info)
+        record.exc_info, record.exc_text, record.stack_info = None, None, None
+        try:
+            return super().format(record)
+        finally:
+            record.exc_info, record.exc_text, record.stack_info = saved
 
 
 # Base class for every log output
@@ -91,8 +112,11 @@ class Target(ABC):
         """
         handler = self.make_handler()
         handler.setLevel(self.level)
+        formatter_class = (
+            logging.Formatter if self.fmt.traceback else _NoTracebackFormatter
+        )
         handler.setFormatter(
-            logging.Formatter(self.fmt.pattern, datefmt=self.fmt.datefmt)
+            formatter_class(self.fmt.pattern, datefmt=self.fmt.datefmt)
         )
         return handler
 
@@ -229,8 +253,8 @@ def setup_logger(
     file_name: str | Path | None = None,
 ) -> logging.Logger:
     """
-    Create the logger: console (short format, INFO and above) and an optional log file
-    (detailed format with path:line, DEBUG and above).
+    Create the logger: console (short format, INFO and above, no tracebacks) and an
+    optional log file (detailed format with path:line, DEBUG and above, with tracebacks).
 
     :param name: Logger name (None = name of the script you ran)
     :param log_to_file: Also write a log file
@@ -243,6 +267,7 @@ def setup_logger(
     short_format = Format(
         pattern="%(asctime)s [%(levelname)s] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
+        traceback=False,
     )
     long_format = Format(
         pattern=(
