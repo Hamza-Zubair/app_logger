@@ -18,8 +18,15 @@ import sys
 
 import pytest
 
-from app_logger import AppLogger, ConsoleTarget, FileTarget, Format, Target, setup_logger
-
+from app_logger import (
+    AppLogger,
+    ConsoleTarget,
+    FileTarget,
+    Format,
+    Target,
+    get_logger,
+    setup_logger,
+)
 
 # ---------------------------------------------------------------------------
 # Shared setup
@@ -82,6 +89,7 @@ def test_child_without_make_handler_cannot_be_created():
         ("Info", "INFO"),  # mixed case
         ("DEBUG", "DEBUG"),  # already uppercase
         ("critical", "CRITICAL"),
+        (" info ", "INFO"),  # surrounding spaces are stripped
         (logging.WARNING, "WARNING"),  # logging's number form (30)
         (logging.DEBUG, "DEBUG"),  # (10)
     ],
@@ -175,31 +183,31 @@ def test_missing_folder_fails_loudly(tmp_path):
 # ---------------------------------------------------------------------------
 # AppLogger
 # ---------------------------------------------------------------------------
-def test_get_logger_returns_a_real_python_logger(logger_name):
-    logger = AppLogger(logger_name, [ConsoleTarget("info", SIMPLE)]).get_logger()
+def test_build_returns_a_real_python_logger(logger_name):
+    logger = AppLogger(logger_name, [ConsoleTarget("info", SIMPLE)]).build()
     assert isinstance(logger, logging.Logger)
     assert logger.name == logger_name
     assert logger is logging.getLogger(logger_name)  # same object other files will get
 
 
 def test_logger_lets_everything_through_and_targets_decide(logger_name):
-    logger = AppLogger(logger_name, [ConsoleTarget("info", SIMPLE)]).get_logger()
+    logger = AppLogger(logger_name, [ConsoleTarget("info", SIMPLE)]).build()
     assert logger.level == logging.DEBUG
 
 
 def test_logger_does_not_propagate_to_root(logger_name):
-    logger = AppLogger(logger_name).get_logger()
+    logger = AppLogger(logger_name).build()
     assert logger.propagate is False
 
 
 def test_no_targets_means_no_handlers(logger_name):
-    assert AppLogger(logger_name).get_logger().handlers == []
+    assert AppLogger(logger_name).build().handlers == []
 
 
 def test_add_target(logger_name):
     app = AppLogger(logger_name)
     app.add_target(ConsoleTarget("info", SIMPLE))
-    assert len(app.get_logger().handlers) == 1
+    assert len(app.build().handlers) == 1
 
 
 def test_two_applogger_objects_do_not_share_their_targets_list(logger_name):
@@ -209,20 +217,34 @@ def test_two_applogger_objects_do_not_share_their_targets_list(logger_name):
     assert b.targets == []  # the None trick: each object gets its own list
 
 
-def test_get_logger_twice_does_not_duplicate_handlers(logger_name, capsys):
+def test_build_twice_does_not_duplicate_handlers(logger_name, capsys):
     app = AppLogger(logger_name, [ConsoleTarget("info", SIMPLE)])
-    app.get_logger()
-    logger = app.get_logger()
+    app.build()
+    logger = app.build()
     assert len(logger.handlers) == 1
     logger.info("hello")
     assert capsys.readouterr().err.count("hello") == 1  # printed once, not twice
 
 
-def test_get_logger_again_closes_the_old_file(logger_name):
+def test_build_again_closes_the_old_file(logger_name):
     app = AppLogger(logger_name, [FileTarget("debug", SIMPLE, "a.log")])
-    old_handler = app.get_logger().handlers[0]
-    app.get_logger()
+    old_handler = app.build().handlers[0]
+    app.build()
     assert old_handler.stream is None  # None = file was closed
+
+
+def test_failed_second_setup_keeps_the_first_one_working(logger_name, tmp_path):
+    # the try_a.py scenario: call 2 crashes, the program carries on
+    logger = setup_logger(name=logger_name, log_to_file=True, file_name="demo.log")
+    logger.info("message 1")
+    with pytest.raises(FileNotFoundError):  # the error is still shown
+        setup_logger(
+            name=logger_name, log_to_file=True, file_name="no_such_folder/x.log"
+        )
+    logger.info("message 2")
+    content = (tmp_path / "demo.log").read_text()
+    assert "message 1" in content
+    assert "message 2" in content  # the old file output survived the failed call
 
 
 # ---------------------------------------------------------------------------
@@ -301,9 +323,53 @@ def test_multi_module_child_loggers_reach_the_file(logger_name, tmp_path):
     # rule 1: the entry script sets up the parent ONCE
     setup_logger(name=logger_name, log_to_file=True, file_name="x.log")
     # rule 2: another module just asks for a child by its dotted name
-    child = logging.getLogger(f"{logger_name}.analysis")
+    child = get_logger(f"{logger_name}.analysis")
     child.debug("message from a submodule")
     assert "message from a submodule" in (tmp_path / "x.log").read_text()
+
+
+def test_get_logger_returns_the_same_logger_as_logging(logger_name):
+    assert get_logger(logger_name) is logging.getLogger(logger_name)
+
+
+def test_get_logger_does_not_replace_the_setup(logger_name, tmp_path):
+    logger = setup_logger(name=logger_name, log_to_file=True, file_name="x.log")
+    handlers_before = list(logger.handlers)
+    get_logger(logger_name)  # e.g. a module asking for the SAME name
+    get_logger(f"{logger_name}.analysis")  # or a child name
+    assert logger.handlers == handlers_before  # no handlers removed, no new file
+
+
+def test_get_logger_called_before_setup_still_works(logger_name, tmp_path):
+    # The usual real-world order: a module does `logger = get_logger(__name__)` at the
+    # top of the file, which runs on IMPORT, i.e. before main() calls setup_logger().
+    child = get_logger(f"{logger_name}.analysis")
+    setup_logger(name=logger_name, log_to_file=True, file_name="x.log")
+    child.info("logged after setup")
+    assert "logged after setup" in (tmp_path / "x.log").read_text()
+
+
+def test_get_logger_child_follows_console_and_file_levels(
+    logger_name, tmp_path, capsys
+):
+    setup_logger(name=logger_name, log_to_file=True, file_name="x.log")
+    child = get_logger(f"{logger_name}.analysis")
+    child.debug("child debug")
+    child.info("child info")
+    console = capsys.readouterr().err
+    file_text = (tmp_path / "x.log").read_text()
+    assert "child debug" not in console  # console: INFO and up
+    assert "child info" in console
+    assert "child debug" in file_text  # file: everything
+    assert "child info" in file_text
+
+
+def test_get_logger_child_line_shows_its_own_file(logger_name, tmp_path):
+    setup_logger(name=logger_name, log_to_file=True, file_name="x.log")
+    get_logger(f"{logger_name}.analysis").warning("from the child")
+    line = (tmp_path / "x.log").read_text().strip()
+    assert "test_app_logger.py:" in line  # path:line of the code that logged
+    assert line.endswith("| from the child")
 
 
 def test_calling_setup_logger_twice_does_not_duplicate(logger_name, capsys):

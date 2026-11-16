@@ -1,22 +1,26 @@
 # This file makes app_logger installable with pip, e.g.:
 #   pip install git+https://github.com/Hamza-Zubair/app_logger.git
 
-[build-system]
+[build-system]                              # python native setuptools build system
 requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "app_logger"
 version = "0.1.0"
+dependencies = []
+requires-python = ">=3.10"
+authors = [{ name = "Hamza Zubair" }]
 description = "One-line logging setup: clean console output + detailed log file."
 readme = "README.md"
-requires-python = ">=3.10"
 license = { file = "LICENSE" }
-authors = [{ name = "Hamza Zubair" }]
-dependencies = []                 # only uses Python's standard library
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Programming Language :: Python"
+]
 
 [project.optional-dependencies]
-dev = ["pytest"]                  # pip install -e ".[dev]"  -> also installs pytest
+dev = ["black", "pytest", "mypy"]           # pip install -e ".[dev]"  -> tools for developing
 
 [tool.setuptools]
 py-modules = ["app_logger"]       # the whole package is this one file

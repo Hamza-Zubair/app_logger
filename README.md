@@ -1,90 +1,84 @@
 # app_logger
 
-One-line logging setup for Python projects, built on the standard `logging` module:
+One-line logging setup for Python projects, built on the standard `logging` module.
 
-- **Console**: clean, short lines for users (INFO and above)
-- **Log file** (optional): detailed lines for debugging (DEBUG and above), with a clickable `path:line`
+- **Console**: clean, short lines (INFO and above)
+- **Log file** (optional): detailed lines with a clickable `path:line` (DEBUG and above)
 
 ```
 Console:   2026-11-16 12:00:44 [INFO] ✅ Analysis completed.
 Log file:  2026-11-16 12:00:44.897 | INFO     | /home/me/project/run.py:52 | ✅ Analysis completed.
 ```
 
-No dependencies beyond the Python standard library.
+Requires Python 3.10+. No dependencies.
 
-## Install
+## Installation
 
 ```bash
-pip install git+https://github.com/Hamza-Zubair/app_logger.git
+pip install git+https://github.com/Hamza-Zubair/app_logger.git@v0.1.0
 ```
 
-Or pin a version in `requirements.txt`, so a project keeps the version it was tested with:
+Or in `requirements.txt`:
 
 ```
 app_logger @ git+https://github.com/Hamza-Zubair/app_logger.git@v0.1.0
 ```
 
-Upgrade later with `pip install --upgrade git+https://github.com/Hamza-Zubair/app_logger.git`.
+## Usage
 
-## Use: single-file script
+Call `setup_logger()` once, in the script you run:
 
 ```python
 from app_logger import setup_logger
 
-logger = setup_logger()                    # console only
-logger = setup_logger(log_to_file=True)    # console + log file
 
-logger.info("Starting...")
+def main():
+    logger = setup_logger(log_to_file=True)
+
+    logger.info("Starting...")
+    try:
+        run_analysis()
+    except Exception:
+        logger.exception("❌ Error")
 ```
 
-## Use: project with several modules (two rules)
+Errors raised anywhere in your code reach this `except` and are logged with the file and line
+where they happened.
 
-**Rule 1: in the script you run, set up once, with your package name:**
+### Logging from other modules (optional)
+
+To let another module write its own messages, give the logger your package name and use
+`get_logger` in that module:
 
 ```python
-# run_analysis.py
-from app_logger import setup_logger
-
+# the script you run
 logger = setup_logger(name="my_package", log_to_file=True)
 ```
 
-**Rule 2: in every other module, just this line (no setup):**
-
 ```python
 # my_package/analysis.py
-import logging
+from app_logger import get_logger
 
-logger = logging.getLogger(__name__)   # "my_package.analysis" -> logs into the logger from rule 1
+logger = get_logger(__name__)
+logger.info("fitting curves")
 ```
-
-Do **not** use `__name__` in rule 1: in the script you run it is always `"__main__"`, so the
-modules' logs would not reach your console or file.
 
 ## Options
 
-| Parameter     | Default                | Meaning |
-|---------------|------------------------|---------|
-| `name`        | name of the script run | Logger name. In a package, use the package name (rule 1). |
-| `log_to_file` | `False`                | Also write a detailed log file. |
-| `file_name`   | `<script>_<timestamp>.log` in the current folder | Where to write the log file. A path like `"logs/run.log"` also works (the folder must exist). |
+| Parameter     | Default                                  | Description |
+|---------------|------------------------------------------|-------------|
+| `name`        | name of the script you run               | Logger name. Use your package name if other modules use `get_logger`. |
+| `log_to_file` | `False`                                  | Also write a log file. |
+| `file_name`   | `<script>_<timestamp>.log` in the current folder | Log file name or path. A fixed name is overwritten on each run. |
 
-The log file is overwritten on each run (`mode="w"`), so each run has its own timestamped file.
-
-## Develop
+## Development
 
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
-.venv/bin/python -m pytest -v
+.venv/bin/python -m pytest
 ```
 
-## How it is built
+## License
 
-| Class           | Job |
-|-----------------|-----|
-| `Format`        | holds a pattern + date format |
-| `Target` (ABC)  | shared code for every output: validated `level` property, `build()` |
-| `ConsoleTarget` | `make_handler()` → console handler |
-| `FileTarget`    | `make_handler()` → file handler, timestamped default name |
-| `AppLogger`     | attaches any list of targets to a Python logger (no duplicates, old files closed) |
-| `setup_logger()`| the one function you call: picks the formats and targets |
+MIT
