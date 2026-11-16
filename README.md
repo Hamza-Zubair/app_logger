@@ -15,13 +15,13 @@ Requires Python 3.10+. No dependencies.
 ## Installation
 
 ```bash
-pip install git+https://github.com/Hamza-Zubair/app_logger.git@v0.2.0
+pip install git+https://github.com/Hamza-Zubair/app_logger.git@v0.2.1
 ```
 
 Or in `requirements.txt`:
 
 ```
-app_logger @ git+https://github.com/Hamza-Zubair/app_logger.git@v0.2.0
+app_logger @ git+https://github.com/Hamza-Zubair/app_logger.git@v0.2.1
 ```
 
 ## Usage

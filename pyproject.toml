@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "app_logger"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = []
 requires-python = ">=3.10"
 authors = [{ name = "Hamza Zubair" }]
@@ -23,8 +23,9 @@ classifiers = [
 dev = ["black", "pytest", "mypy"]           # pip install -e ".[dev]"  -> tools for developing
 
 [tool.setuptools]
-py-modules = ["app_logger"]       # the whole package is this one file
+packages = ["app_logger"]                     # the package is the app_logger/ folder
+package-data = { app_logger = ["py.typed"] }  # include the marker: "this package has type hints"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["."]                # lets tests/ import app_logger.py
+pythonpath = ["."]                # lets tests/ import the app_logger/ package
