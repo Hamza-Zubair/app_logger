@@ -1,9 +1,9 @@
 """
-Tests for app_logger.py
+Tests for the app_logger package (app_logger/__init__.py)
 
 Run them (from the repository folder) with:   .venv/bin/python -m pytest -v
 
-Each test checks ONE behaviour. If you change app_logger.py, run these again:
+Each test checks ONE behaviour. If you change app_logger, run these again:
 if they all pass, you didn't break anything that used to work.
 
 Pytest helpers used here (pytest passes them in automatically by name):
@@ -15,10 +15,12 @@ Pytest helpers used here (pytest passes them in automatically by name):
 import logging
 import re
 import sys
+from pathlib import Path
 
 import pytest
 
 from app_logger import (
+    _HANDLER_NAME,
     AppLogger,
     ConsoleTarget,
     FileTarget,
@@ -34,10 +36,28 @@ from app_logger import (
 SIMPLE = Format("%(levelname)s:%(message)s", None)  # an easy-to-check format
 
 
+def our_root_handlers():
+    """The handlers setup_logger() put on the root logger."""
+    return [h for h in logging.getLogger().handlers if h.get_name() == _HANDLER_NAME]
+
+
 @pytest.fixture(autouse=True)
 def run_in_temp_folder(tmp_path, monkeypatch):
     """Every test runs inside an empty temp folder, so log files never land in your project."""
     monkeypatch.chdir(tmp_path)
+
+
+@pytest.fixture(autouse=True)
+def clean_root_logger():
+    """setup_logger() configures the root logger, which lives for the whole test run:
+    remove its outputs after each test so they can't leak into the next one."""
+    root = logging.getLogger()
+    old_level = root.level
+    yield
+    for handler in our_root_handlers():
+        handler.close()
+        root.removeHandler(handler)
+    root.setLevel(old_level)
 
 
 @pytest.fixture
@@ -239,7 +259,7 @@ def test_build_again_closes_the_old_file(logger_name):
 
 
 def test_failed_second_setup_keeps_the_first_one_working(logger_name, tmp_path):
-    # the try_a.py scenario: call 2 crashes, the program carries on
+    # a second setup_logger() call crashes (missing folder), the program carries on
     logger = setup_logger(name=logger_name, log_to_file=True, file_name="demo.log")
     logger.info("message 1")
     with pytest.raises(FileNotFoundError):  # the error is still shown
@@ -267,15 +287,58 @@ def test_setup_logger_with_file_has_console_and_file(logger_name):
     assert kinds == ["FileHandler", "StreamHandler"]
 
 
-def test_setup_logger_name_defaults_to_script_name(monkeypatch):
-    monkeypatch.setattr(sys, "argv", ["/anywhere/my_tool.py"])
+def test_setup_logger_without_name_sets_up_the_root_logger():
+    # like logging.basicConfig(): the root is the top of the tree, every logger reports to it
     logger = setup_logger()
+    assert logger is logging.getLogger()
+    assert len(our_root_handlers()) == 1
+
+
+def test_setup_logger_with_name_sets_up_only_that_logger(logger_name):
+    logger = setup_logger(name=logger_name)
+    assert logger.name == logger_name
+    assert len(logger.handlers) == 1
+    assert our_root_handlers() == []  # the root is left alone
+
+
+def test_setup_logger_leaves_other_root_handlers_alone():
+    # e.g. handlers added by Jupyter or pytest: only app_logger's own get replaced
+    foreign = logging.NullHandler()
+    logging.getLogger().addHandler(foreign)
     try:
-        assert logger.name == "my_tool"
+        setup_logger()
+        setup_logger()
+        assert foreign in logging.getLogger().handlers
+        assert len(our_root_handlers()) == 1
     finally:
-        for h in logger.handlers[:]:
-            h.close()
-            logger.removeHandler(h)
+        logging.getLogger().removeHandler(foreign)
+
+
+def test_two_named_loggers_are_independent(tmp_path, capsys):
+    # one console-only logger and one console + file logger in the same program
+    logger1 = setup_logger(name="test_abc", log_to_file=False)
+    logger2 = setup_logger(name="test_xyz", log_to_file=True, file_name="xyz.log")
+    try:
+        logger1.info("from logger1")
+        logger2.info("from logger2")
+        console = capsys.readouterr().err
+        file_text = (tmp_path / "xyz.log").read_text()
+        assert console.count("from logger1") == 1
+        assert console.count("from logger2") == 1
+        assert "from logger1" not in file_text  # logger1 has no file
+        assert "from logger2" in file_text
+    finally:
+        for logger in (logger1, logger2):
+            for handler in logger.handlers[:]:
+                handler.close()
+                logger.removeHandler(handler)
+
+
+def test_named_and_unnamed_setup_together_do_not_duplicate(logger_name, capsys):
+    setup_logger()  # root
+    logger = setup_logger(name=logger_name)  # an independent named logger
+    logger.info("once")
+    assert capsys.readouterr().err.count("once") == 1
 
 
 def test_console_shows_info_and_up_but_not_debug(logger_name, capsys):
@@ -298,13 +361,43 @@ def test_file_gets_everything_including_debug(logger_name, tmp_path):
     assert "info line" in content
 
 
+def test_console_level_can_be_changed(logger_name, capsys):
+    logger = setup_logger(name=logger_name, console_level="debug")
+    logger.debug("debug on the console")
+    assert "[DEBUG] debug on the console" in capsys.readouterr().err
+
+
+def test_file_level_can_be_changed(logger_name, tmp_path):
+    logger = setup_logger(
+        name=logger_name, log_to_file=True, file_name="x.log", file_level="warning"
+    )
+    logger.info("info line")
+    logger.warning("warning line")
+    content = (tmp_path / "x.log").read_text()
+    assert "info line" not in content
+    assert "warning line" in content
+
+
+def test_levels_accept_logging_numbers(logger_name, capsys):
+    logger = setup_logger(name=logger_name, console_level=logging.DEBUG)
+    logger.debug("number level")
+    assert "number level" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("bad", ["dbug", "", 15])
+def test_bad_level_is_rejected_with_a_clear_error(logger_name, bad):
+    with pytest.raises(ValueError, match="Invalid log level"):
+        setup_logger(name=logger_name, console_level=bad)
+
+
 def test_file_line_has_level_path_and_line_number(logger_name, tmp_path):
     logger = setup_logger(name=logger_name, log_to_file=True, file_name="x.log")
     logger.warning("where am I")
     line = (tmp_path / "x.log").read_text().strip()
     # e.g. 2026-11-16 12:00:44.871 | WARNING  | /path/test_app_logger.py:123 | where am I
     assert re.fullmatch(
-        r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} \| WARNING  \| .*test_app_logger\.py:\d+ \| where am I",
+        r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} \| WARNING  \| "
+        r".*test_app_logger\.py:\d+ \| where am I",
         line,
     ), line
 
@@ -324,59 +417,6 @@ def test_unicode_and_emoji_are_written_to_file(logger_name, tmp_path):
     assert "✅ Success: µM dose" in (tmp_path / "x.log").read_text(encoding="utf-8")
 
 
-def test_multi_module_child_loggers_reach_the_file(logger_name, tmp_path):
-    # rule 1: the entry script sets up the parent ONCE
-    setup_logger(name=logger_name, log_to_file=True, file_name="x.log")
-    # rule 2: another module just asks for a child by its dotted name
-    child = get_logger(f"{logger_name}.analysis")
-    child.debug("message from a submodule")
-    assert "message from a submodule" in (tmp_path / "x.log").read_text()
-
-
-def test_get_logger_returns_the_same_logger_as_logging(logger_name):
-    assert get_logger(logger_name) is logging.getLogger(logger_name)
-
-
-def test_get_logger_does_not_replace_the_setup(logger_name, tmp_path):
-    logger = setup_logger(name=logger_name, log_to_file=True, file_name="x.log")
-    handlers_before = list(logger.handlers)
-    get_logger(logger_name)  # e.g. a module asking for the SAME name
-    get_logger(f"{logger_name}.analysis")  # or a child name
-    assert logger.handlers == handlers_before  # no handlers removed, no new file
-
-
-def test_get_logger_called_before_setup_still_works(logger_name, tmp_path):
-    # The usual real-world order: a module does `logger = get_logger(__name__)` at the
-    # top of the file, which runs on IMPORT, i.e. before main() calls setup_logger().
-    child = get_logger(f"{logger_name}.analysis")
-    setup_logger(name=logger_name, log_to_file=True, file_name="x.log")
-    child.info("logged after setup")
-    assert "logged after setup" in (tmp_path / "x.log").read_text()
-
-
-def test_get_logger_child_follows_console_and_file_levels(
-    logger_name, tmp_path, capsys
-):
-    setup_logger(name=logger_name, log_to_file=True, file_name="x.log")
-    child = get_logger(f"{logger_name}.analysis")
-    child.debug("child debug")
-    child.info("child info")
-    console = capsys.readouterr().err
-    file_text = (tmp_path / "x.log").read_text()
-    assert "child debug" not in console  # console: INFO and up
-    assert "child info" in console
-    assert "child debug" in file_text  # file: everything
-    assert "child info" in file_text
-
-
-def test_get_logger_child_line_shows_its_own_file(logger_name, tmp_path):
-    setup_logger(name=logger_name, log_to_file=True, file_name="x.log")
-    get_logger(f"{logger_name}.analysis").warning("from the child")
-    line = (tmp_path / "x.log").read_text().strip()
-    assert "test_app_logger.py:" in line  # path:line of the code that logged
-    assert line.endswith("| from the child")
-
-
 def test_calling_setup_logger_twice_does_not_duplicate(logger_name, capsys):
     setup_logger(name=logger_name)
     logger = setup_logger(name=logger_name)
@@ -390,6 +430,72 @@ def test_logging_error_does_not_crash_the_program(logger_name, capsys):
     logger.info("broken %d", "not a number")
     logger.info("still running")
     assert "still running" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# Other files: get_logger(__name__)
+# (no name in setup_logger + a module's own name was the case broken in v0.2.x)
+# ---------------------------------------------------------------------------
+# a name that has nothing to do with setup_logger's name, like a real module's __name__
+MODULE = "some_package.analysis"
+
+
+def test_module_logger_reaches_console_and_file_without_a_setup_name(tmp_path, capsys):
+    setup_logger(log_to_file=True, file_name="x.log")  # no name, like a real script
+    get_logger(MODULE).info("message from a module")
+    assert "[INFO] message from a module" in capsys.readouterr().err
+    assert "message from a module" in (tmp_path / "x.log").read_text()
+
+
+def test_module_logger_created_before_setup_still_works(tmp_path):
+    # the usual order: `logger = get_logger(__name__)` at the top of a module
+    # runs on IMPORT, i.e. before main() calls setup_logger()
+    module_logger = get_logger(MODULE)
+    setup_logger(log_to_file=True, file_name="x.log")
+    module_logger.info("logged after setup")
+    assert "logged after setup" in (tmp_path / "x.log").read_text()
+
+
+def test_module_logger_follows_console_and_file_levels(tmp_path, capsys):
+    setup_logger(log_to_file=True, file_name="x.log")
+    module_logger = get_logger(MODULE)
+    module_logger.debug("module debug")
+    module_logger.info("module info")
+    console = capsys.readouterr().err
+    file_text = (tmp_path / "x.log").read_text()
+    assert "module debug" not in console  # console: INFO and up
+    assert "module info" in console
+    assert "module debug" in file_text  # file: everything
+    assert "module info" in file_text
+
+
+def test_module_logger_line_shows_its_own_file(tmp_path):
+    setup_logger(log_to_file=True, file_name="x.log")
+    get_logger(MODULE).warning("from the module")
+    line = (tmp_path / "x.log").read_text().strip()
+    assert "test_app_logger.py:" in line  # path:line of the code that logged
+    assert line.endswith("| from the module")
+
+
+def test_named_setup_reaches_only_modules_under_its_name(logger_name, tmp_path):
+    setup_logger(name=logger_name, log_to_file=True, file_name="x.log")
+    get_logger(f"{logger_name}.analysis").info("from a module under the name")
+    get_logger(MODULE).info("from an unrelated module")
+    file_text = (tmp_path / "x.log").read_text()
+    assert "from a module under the name" in file_text
+    assert "from an unrelated module" not in file_text
+
+
+def test_pytest_caplog_sees_messages_of_the_unnamed_setup(caplog):
+    # caplog listens on the root logger, so it sees the unnamed (root) setup
+    setup_logger().warning("checked by caplog")
+    get_logger(MODULE).warning("module, checked by caplog")
+    assert "checked by caplog" in caplog.text
+    assert "module, checked by caplog" in caplog.text
+
+
+def test_get_logger_is_the_same_as_pythons_logger_with_that_name():
+    assert get_logger(MODULE) is logging.getLogger(MODULE)
 
 
 # ---------------------------------------------------------------------------
@@ -435,4 +541,4 @@ def test_hiding_the_traceback_does_not_depend_on_output_order(logger_name, capsy
     except Exception:
         logger.exception("boom")
     assert "Traceback" not in capsys.readouterr().err
-    assert "Traceback" in open("x.log", encoding="utf-8").read()
+    assert "Traceback" in Path("x.log").read_text(encoding="utf-8")

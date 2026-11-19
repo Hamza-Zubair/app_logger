@@ -1,8 +1,8 @@
 """
 app_logger — one-line logging setup for Python projects.
 
-- Console: clean, short lines for users (INFO and above)
-- Log file (optional): detailed lines for debugging (DEBUG and above), with a clickable path:line
+- Console: clean, short lines for users (INFO and above by default)
+- Log file (optional): detailed lines with path:line (DEBUG and above by default)
 
 Usage, in the script you run:
 
@@ -10,19 +10,62 @@ Usage, in the script you run:
 
     logger = setup_logger(log_to_file=True)
     logger.info("Starting...")
+
+In every other file of your project (no setup there):
+
+    from app_logger import get_logger
+
+    logger = get_logger(__name__)
+
+
+How it fits together
+--------------------
+setup_logger(name=None, log_to_file=False, file_name=None,     <- your one line
+             console_level="INFO", file_level="DEBUG")
+|   all the choices (formats, levels) are made here:
+|
++-- short_format = Format(pattern, datefmt, traceback=False)  console: no tracebacks
++-- long_format  = Format(pattern, datefmt)                   file: with tracebacks
+|
++-- ConsoleTarget(console_level, short_format)                always
++-- FileTarget(file_level, long_format, file_name)            only if log_to_file
+|       no file_name? -> _script_name() + timestamp
+|
++-- AppLogger(name, targets).build()
+        - each Target.build() makes a handler, tagged "app_logger"
+          (traceback=False in its Format -> _NoTracebackFormatter)
+        - removes OUR old handlers (tag "app_logger"), never anyone else's
+        - attaches the new ones to:
+            name=None -> the root logger: every get_logger(__name__) reaches it
+            a name    -> that logger only: independent from other setups
+
+get_logger(__name__)                                         <- other files
+
+Format                 a layout: pattern + date format + show tracebacks or not
+Target (ABC)           an output: a validated level + a Format, turned into a handler
+ConsoleTarget          make_handler() -> console handler
+FileTarget             make_handler() -> file handler
+_NoTracebackFormatter  writes a line without its traceback (used for the console)
+_script_name()         the script's name, for the default log file name
+AppLogger              puts the handlers on a logger (root or named), safely
+setup_logger()         your choices + puts it all together
+get_logger()           a logger for other files
 """
 
-from abc import ABC, abstractmethod
-from pathlib import Path
 import datetime
 import logging
 import sys
+from abc import ABC, abstractmethod
+from pathlib import Path
+
+# every handler app_logger creates gets this name, so it only ever replaces its own
+_HANDLER_NAME = "app_logger"
 
 
 # Script name helper
 def _script_name() -> str:
     """
-    Name of the script that was run, without folder and ".py", or "log" if there is none.
+    Name of the script that was run, without folder and ".py" ("log" if there is none).
 
     :returns: Script name, e.g. "run"
     """
@@ -35,8 +78,9 @@ class Format:
     A log line layout: the pattern, the date format, and whether tracebacks are shown.
 
     :param pattern: Logging pattern, e.g. "%(asctime)s [%(levelname)s] %(message)s"
-    :param datefmt: Date format for %(asctime)s, e.g. "%Y-%m-%d %H:%M:%S" (None = default)
-    :param traceback: Show the traceback of logger.exception(...) calls (False = message only)
+    :param datefmt: Date format for %(asctime)s, e.g. "%Y-%m-%d %H:%M:%S"
+                    (None = logging's default)
+    :param traceback: Show tracebacks of logger.exception(...) (False = message only)
     """
 
     def __init__(
@@ -54,6 +98,12 @@ class _NoTracebackFormatter(logging.Formatter):
     """
 
     def format(self, record: logging.LogRecord) -> str:
+        """
+        Format the record without its traceback.
+
+        :param record: The log record to format
+        :returns: The formatted log line
+        """
         # hide the traceback for this one line, then put it back,
         # so other outputs (e.g. the log file) still get it
         saved = (record.exc_info, record.exc_text, record.stack_info)
@@ -111,6 +161,7 @@ class Target(ABC):
         :returns: Handler, to be attached to a logger
         """
         handler = self.make_handler()
+        handler.set_name(_HANDLER_NAME)
         handler.setLevel(self.level)
         formatter_class = (
             logging.Formatter if self.fmt.traceback else _NoTracebackFormatter
@@ -124,11 +175,11 @@ class Target(ABC):
     @abstractmethod
     def make_handler(self) -> logging.Handler:
         """
-        Create a new, bare handler of this output's kind. Every child must implement this.
+        Create a new, bare handler of this output's kind.
+        Every child class must implement this.
 
         :returns: Handler without level or format
         """
-        pass
 
 
 # Console output
@@ -138,6 +189,9 @@ class ConsoleTarget(Target):
     """
 
     def make_handler(self) -> logging.Handler:
+        """
+        :returns: Handler that writes to the console (stderr)
+        """
         return logging.StreamHandler()
 
     def __repr__(self) -> str:
@@ -154,7 +208,8 @@ class FileTarget(Target):
 
     :param level: Minimum level for the file
     :param fmt: Format used for the file's lines
-    :param file_name: File name or path (None = "<script>_<timestamp>.log" in current folder)
+    :param file_name: File name or path
+                      (None = "<script>_<timestamp>.log" in the current folder)
     """
 
     def __init__(
@@ -166,6 +221,9 @@ class FileTarget(Target):
         self.file_name = file_name
 
     def make_handler(self) -> logging.Handler:
+        """
+        :returns: Handler that writes to file_name (old content replaced)
+        """
         return logging.FileHandler(str(self.file_name), mode="w", encoding="utf-8")
 
     @staticmethod
@@ -173,7 +231,8 @@ class FileTarget(Target):
         """
         Name of the script that was run + a timestamp.
 
-        :returns: File name, e.g. "run_2026.11.16_120044.log" ("log_<timestamp>.log" if no script)
+        :returns: File name, e.g. "run_2026.11.16_120044.log"
+                  ("log_<timestamp>.log" if no script)
         """
         timestamp = datetime.datetime.now().strftime("%Y.%m.%d_%H%M%S")
         return f"{_script_name()}_{timestamp}.log"
@@ -190,11 +249,11 @@ class AppLogger:
     """
     Attaches any list of targets to a Python logger.
 
-    :param name: Logger name
+    :param name: Logger name (None = the root logger, which every logger reports to)
     :param targets: Outputs to attach (None = no outputs)
     """
 
-    def __init__(self, name: str, targets: list[Target] | None = None) -> None:
+    def __init__(self, name: str | None, targets: list[Target] | None = None) -> None:
         self.name = name
         if targets is None:
             targets = []
@@ -212,8 +271,9 @@ class AppLogger:
         """
         Set up the Python logger with this object's targets.
 
-        Safe to call more than once: old handlers are replaced, so messages are never
-        printed twice. If building a new handler fails, the error is raised and the
+        Safe to call more than once: handlers from an earlier build() are replaced,
+        so messages are never printed twice. Handlers that app_logger didn't create
+        are left alone. If building a new handler fails, the error is raised and the
         previous setup stays untouched.
 
         :returns: Configured logging.Logger
@@ -231,13 +291,15 @@ class AppLogger:
                 handler.close()
             raise
 
-        # Step2: everything worked -> remove the old handlers (closes old log files)
+        # Step2: everything worked -> remove OUR old handlers (closes old log files)
         for handler in logger.handlers[:]:
-            handler.close()
-            logger.removeHandler(handler)
+            if handler.get_name() == _HANDLER_NAME:
+                handler.close()
+                logger.removeHandler(handler)
 
         # Step3: attach the new ones
-        # don't also pass messages to the root logger (would print them twice)
+        # a named logger doesn't also pass messages up to the root (no duplicates);
+        # for the root logger itself this has no effect
         logger.propagate = False
         # let everything through; each target decides with its own level
         logger.setLevel(logging.DEBUG)
@@ -251,19 +313,21 @@ def setup_logger(
     name: str | None = None,
     log_to_file: bool = False,
     file_name: str | Path | None = None,
+    console_level: str | int = "INFO",
+    file_level: str | int = "DEBUG",
 ) -> logging.Logger:
     """
-    Create the logger: console (short format, INFO and above, no tracebacks) and an
-    optional log file (detailed format with path:line, DEBUG and above, with tracebacks).
+    Create the logger: a console (short lines, no tracebacks) and an optional log file
+    (path:line, with tracebacks). Call it once, in the script you run.
 
-    :param name: Logger name (None = name of the script you ran)
+    :param name: None = one setup on the root logger, used by every get_logger();
+                 a name = an independent logger with its own outputs
     :param log_to_file: Also write a log file
-    :param file_name: Log file name or path (None = "<script>_<timestamp>.log" in current folder)
-    :returns: Configured logging.Logger, e.g. logger.info("...")
+    :param file_name: Log file name or path (None = "<script>_<timestamp>.log")
+    :param console_level: Minimum level on the console, any casing
+    :param file_level: Minimum level in the log file, any casing
+    :returns: Configured logging.Logger
     """
-    if name is None:
-        name = _script_name()
-
     short_format = Format(
         pattern="%(asctime)s [%(levelname)s] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
@@ -278,28 +342,32 @@ def setup_logger(
     )
 
     # console is always on, the file only if asked
-    targets: list[Target] = [ConsoleTarget(level="info", fmt=short_format)]
+    targets: list[Target] = [ConsoleTarget(level=console_level, fmt=short_format)]
     if log_to_file:
-        targets.append(FileTarget(level="debug", fmt=long_format, file_name=file_name))
+        targets.append(
+            FileTarget(level=file_level, fmt=long_format, file_name=file_name)
+        )
 
+    # no name -> the root logger: every file's get_logger(__name__) reports to it
+    # a name  -> only that logger: independent from other setups
     return AppLogger(name, targets).build()
 
 
-# Optional helper for other modules
+# For every other file of your project
 def get_logger(name: str) -> logging.Logger:
     """
-    Get a logger that writes through the setup_logger() setup. Optional: only needed if
-    another module should write its own messages, e.g. logger = get_logger(__name__).
+    Get a logger for another file of your project, e.g. get_logger(__name__).
 
-    It does no setup itself, so it never replaces outputs or starts a new log file.
+    No setup needed: it writes to the outputs of setup_logger() (called without a
+    name). With setup_logger(name="pkg"), only names under it ("pkg.<...>") do.
 
     :param name: Logger name, usually __name__
-    :returns: logging.Logger with that name
+    :returns: Logger with that name
     """
     return logging.getLogger(name)
 
 
-# Quick manual check: python app_logger.py
+# Quick manual check: python app_logger/__init__.py
 if __name__ == "__main__":
     demo_logger = setup_logger(log_to_file=True)
     demo_logger.debug("debug message")
